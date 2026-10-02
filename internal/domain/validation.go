@@ -9,26 +9,56 @@ import (
 )
 
 const (
-	MaxZoneRunes       = 253
-	MaxAuthorityRunes  = 253
-	MaxNodeNameRunes   = 180
-	MaxRegionRunes     = 48
-	MinRequestKeyRunes = 8
-	MaxRequestKeyRunes = 64
-	MaxEntries         = 500
+	MaxZoneRunes         = 253
+	MaxAuthorityRunes    = 253
+	MaxNodeNameRunes     = 180
+	MaxRegionRunes       = 48
+	MinRequestKeyRunes   = 8
+	MaxRequestKeyRunes   = 64
+	MaxEntries           = 500
+	MaxTemplateNameRunes = 72
+	MaxScopeRunes        = 72
 )
 
 type PlanCreateInput struct {
-	Zone                string  `json:"zone"`
+	Zone string `json:"zone"`
+	// 阈值可以直接随请求给出，也可以引用某个阈值模板版本；
+	// 引用模板时阈值由模板版本快照决定，两者不能混用。
 	MinimumSuccessRatio float64 `json:"minimum_success_ratio"`
 	MaximumLatencyMS    int     `json:"maximum_latency_ms"`
 	ExpectedNodes       int     `json:"expected_nodes"`
+	ThresholdTemplateID string  `json:"threshold_template_id"`
+	ThresholdVersion    int     `json:"threshold_version"`
 }
 
 type RevisionCreateInput struct {
 	Serial    uint32      `json:"serial"`
 	Authority string      `json:"authority"`
 	Entries   []ZoneEntry `json:"entries"`
+}
+
+// ThresholdTemplateCreateInput 创建模板并写入其首个不可变版本。
+type ThresholdTemplateCreateInput struct {
+	Name                string  `json:"name"`
+	Scope               string  `json:"scope"`
+	MinimumSuccessRatio float64 `json:"minimum_success_ratio"`
+	MaximumLatencyMS    int     `json:"maximum_latency_ms"`
+}
+
+// ThresholdVersionCreateInput 为已存在模板追加新版本。
+// Scope 留空时继承最新版本的适用范围。
+type ThresholdVersionCreateInput struct {
+	MinimumSuccessRatio float64 `json:"minimum_success_ratio"`
+	MaximumLatencyMS    int     `json:"maximum_latency_ms"`
+	Scope               string  `json:"scope"`
+}
+
+// ApplyThresholdInput 把指定模板版本应用并锁定到草稿计划。
+// Version 为 0 时应用模板的最新版本。
+type ApplyThresholdInput struct {
+	TemplateID          string `json:"template_id"`
+	Version             int    `json:"version"`
+	ExpectedPlanVersion uint64 `json:"expected_version"`
 }
 
 type NodeCreateInput struct {
@@ -58,6 +88,7 @@ type AssessmentInput struct {
 
 func NormalizePlanInput(input PlanCreateInput) PlanCreateInput {
 	input.Zone = canonicalName(input.Zone)
+	input.ThresholdTemplateID = strings.TrimSpace(input.ThresholdTemplateID)
 	return input
 }
 
@@ -67,17 +98,151 @@ func ValidatePlanInput(input PlanCreateInput) error {
 	if err := validateCanonicalName(input.Zone); err != nil {
 		details["zone"] = err.Error()
 	}
-	if input.MinimumSuccessRatio < 0 || input.MinimumSuccessRatio > 1 {
-		details["minimum_success_ratio"] = "must be between 0 and 1"
-	}
-	if input.MaximumLatencyMS < 1 || input.MaximumLatencyMS > 600000 {
-		details["maximum_latency_ms"] = "must be between 1 and 600000"
+	// 阈值要么随请求内联给出，要么引用模板版本；成功比例与延迟必须成对出现，
+	// 不能与模板引用混用。模板是否存在、是否停用由服务在事务内判定。
+	inlineThreshold := input.MinimumSuccessRatio != 0 || input.MaximumLatencyMS != 0
+	templateReference := input.ThresholdTemplateID != "" || input.ThresholdVersion != 0
+	switch {
+	case inlineThreshold && templateReference:
+		details["minimum_success_ratio"] = "inline thresholds cannot be combined with a threshold template"
+	case !inlineThreshold && !templateReference:
+		details["minimum_success_ratio"] = "inline thresholds or a threshold template reference is required"
+	case inlineThreshold:
+		if input.MinimumSuccessRatio < 0 || input.MinimumSuccessRatio > 1 {
+			details["minimum_success_ratio"] = "must be between 0 and 1"
+		}
+		if input.MaximumLatencyMS < 1 || input.MaximumLatencyMS > 600000 {
+			details["maximum_latency_ms"] = "must be between 1 and 600000"
+		}
+	default:
+		if input.ThresholdTemplateID == "" {
+			details["threshold_template_id"] = "is required when threshold_version is set"
+		}
+		if input.ThresholdVersion < 0 {
+			details["threshold_version"] = "must be greater than or equal to zero"
+		}
 	}
 	if input.ExpectedNodes < 1 || input.ExpectedNodes > 500 {
 		details["expected_nodes"] = "must be between 1 and 500"
 	}
 	if len(details) > 0 {
 		return Validation("plan input is invalid", details)
+	}
+	return nil
+}
+
+func NormalizeThresholdTemplateInput(input ThresholdTemplateCreateInput) ThresholdTemplateCreateInput {
+	input.Name = normalizeTemplateName(input.Name)
+	input.Scope = normalizeScope(input.Scope)
+	return input
+}
+
+func ValidateThresholdTemplateInput(input ThresholdTemplateCreateInput) error {
+	input = NormalizeThresholdTemplateInput(input)
+	details := make(map[string]any)
+	if err := validateTemplateName(input.Name); err != nil {
+		details["name"] = err.Error()
+	}
+	if err := validateScope(input.Scope); err != nil {
+		details["scope"] = err.Error()
+	}
+	if input.MinimumSuccessRatio < 0 || input.MinimumSuccessRatio > 1 {
+		details["minimum_success_ratio"] = "must be between 0 and 1"
+	}
+	if input.MaximumLatencyMS < 1 || input.MaximumLatencyMS > 600000 {
+		details["maximum_latency_ms"] = "must be between 1 and 600000"
+	}
+	if len(details) > 0 {
+		return Validation("threshold template input is invalid", details)
+	}
+	return nil
+}
+
+func NormalizeThresholdVersionInput(input ThresholdVersionCreateInput) ThresholdVersionCreateInput {
+	input.Scope = normalizeScope(input.Scope)
+	return input
+}
+
+func ValidateThresholdVersionInput(input ThresholdVersionCreateInput) error {
+	input = NormalizeThresholdVersionInput(input)
+	details := make(map[string]any)
+	if input.MinimumSuccessRatio < 0 || input.MinimumSuccessRatio > 1 {
+		details["minimum_success_ratio"] = "must be between 0 and 1"
+	}
+	if input.MaximumLatencyMS < 1 || input.MaximumLatencyMS > 600000 {
+		details["maximum_latency_ms"] = "must be between 1 and 600000"
+	}
+	if input.Scope != "" {
+		if err := validateScope(input.Scope); err != nil {
+			details["scope"] = err.Error()
+		}
+	}
+	if len(details) > 0 {
+		return Validation("threshold version input is invalid", details)
+	}
+	return nil
+}
+
+func ValidateApplyThresholdInput(input ApplyThresholdInput) error {
+	input.TemplateID = strings.TrimSpace(input.TemplateID)
+	details := make(map[string]any)
+	if input.TemplateID == "" {
+		details["template_id"] = "is required"
+	}
+	if input.Version < 0 {
+		details["version"] = "must be greater than or equal to zero"
+	}
+	if input.ExpectedPlanVersion == 0 {
+		details["expected_version"] = "must be greater than zero"
+	}
+	if len(details) > 0 {
+		return Validation("apply threshold input is invalid", details)
+	}
+	return nil
+}
+
+func normalizeTemplateName(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func validateTemplateName(value string) error {
+	if value == "" {
+		return Validation("is required", nil)
+	}
+	if utf8.RuneCountInString(value) > MaxTemplateNameRunes {
+		return Validation("is too long", nil)
+	}
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			continue
+		}
+		if r == '-' || r == '_' {
+			continue
+		}
+		return Validation("may contain only lowercase letters, digits, hyphens, and underscores", nil)
+	}
+	return nil
+}
+
+func normalizeScope(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func validateScope(value string) error {
+	if value == "" {
+		return Validation("is required", nil)
+	}
+	if utf8.RuneCountInString(value) > MaxScopeRunes {
+		return Validation("is too long", nil)
+	}
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			continue
+		}
+		if r == '-' || r == '_' {
+			continue
+		}
+		return Validation("may contain only lowercase letters, digits, hyphens, and underscores", nil)
 	}
 	return nil
 }

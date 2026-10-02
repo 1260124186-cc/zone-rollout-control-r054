@@ -82,6 +82,34 @@ Zone Rollout Control 是面向 DNS 运维人员的 Go HTTP 控制面。它把区
 - `probe_count`、`success_count`、`success_ratio`、`maximum_latency_ms`。
 - `created_at`。
 
+### ThresholdTemplate
+
+按业务等级复用的版本化一致性阈值模板。
+
+- `id`：服务生成的稳定标识。
+- `name`：全局唯一的小写模板名，只允许小写字母、数字、连字符和下划线。
+- `state`：`active` 或 `disabled`。
+- `scope`：最新版本的适用范围摘要。
+- `latest_version`、`created_at`、`disabled_at`。
+
+### ThresholdTemplateVersion
+
+阈值模板下不可变的版本记录，承载实际阈值。
+
+- `id`、`template_id`、`version`：从 1 开始严格递增。
+- `minimum_success_ratio`：范围为 0 到 1。
+- `maximum_latency_ms`：范围为 1 到 600000。
+- `scope`：适用范围标识，如业务等级或节点集合标签。
+- `created_at`。
+
+同一模板下与任一既有版本的成功率、延迟和适用范围完全相同的新版本返回 `duplicate_template`。
+
+RolloutPlan 增加模板锁定字段：
+
+- `threshold_template_id`、`threshold_version`：非空表示计划已锁定某个模板版本。
+- 锁定后阈值是创建或应用时刻的快照，模板新增版本或停用都不会改变已有计划。
+- 两个字段为空时，阈值继续来自创建请求内的 `minimum_success_ratio` 和 `maximum_latency_ms`。
+
 ## 4. 状态和规则
 
 ### 滚动计划状态
@@ -142,6 +170,18 @@ ready --lease--> leased --report--> ready
 - `success_ratio_below_minimum`
 - `latency_limit_exceeded`
 
+### 阈值模板版本化
+
+- 创建模板同时写入版本 1；后续只能追加新版本，版本内容不可修改、不可删除。
+- 计划创建时可以二选一：请求体内联阈值，或引用 `threshold_template_id`（可带 `threshold_version`，缺省取最新）。两种方式不能混用。
+- 草稿计划可以通过 `PATCH /v1/plans/{id}/threshold` 应用或切换模板版本，必须匹配当前计划版本。
+- 应用成功后计划保存该版本的阈值快照及版本坐标；模板再出版本或停用都不会回改计划。
+- 重复应用当前已锁定的同一模板版本是幂等操作，不提升计划版本。
+- 停用模板是幂等的；停用后不能再出版本，也不能被新计划引用或被草稿计划应用，但已锁定该模板版本的计划继续按原阈值判定。
+- 计划离开草稿（已激活或已完成）后应用模板返回 `invalid_state`。
+- 并发应用同一计划时，乐观版本控制保证恰好一个请求成功，其余返回 `version_conflict`。
+- 未引用模板的计划继续使用请求内阈值，行为与历史版本一致。
+
 ## 5. 工作流
 
 ### W1 计划生命周期和区域版本
@@ -150,6 +190,7 @@ ready --lease--> leased --report--> ready
 
 - `PUT /v1/plans`
 - `PATCH /v1/plans/{id}/revisions`
+- `PATCH /v1/plans/{id}/threshold`
 - `PATCH /v1/plans/{id}/activate`
 - `PATCH /v1/plans/{id}/complete`
 
@@ -163,6 +204,28 @@ ready --lease--> leased --report--> ready
 成功行为：计划按 `draft -> active -> completed` 迁移，区域版本在激活前可追加。
 
 失败行为：重复序列号、非法名称、缺少版本、版本冲突或非法迁移不会修改状态。
+
+### W1b 阈值模板版本化与应用
+
+入口：
+
+- `PUT /v1/threshold-templates`
+- `PATCH /v1/threshold-templates/{id}/versions`
+- `PATCH /v1/threshold-templates/{id}/disable`
+- `GET /v1/threshold-templates`、`GET /v1/threshold-templates/{id}`
+- `PUT /v1/plans`（模板引用）
+- `PATCH /v1/plans/{id}/threshold`
+
+步骤：
+
+1. HTTP 层严格解码并校验模板名、适用范围、成功率和延迟区间。
+2. 阈值服务在事务内保证名称唯一、版本严格递增且规则不重复。
+3. 计划创建或应用模板时，在同一事务内解析模板版本，并把阈值快照和版本坐标写入计划。
+4. 计划版本与期望版本比较后提交，原子替换快照。
+
+成功行为：计划锁定具体模板版本，后续模板变化不影响计划；停用、重复停用和重复应用都有确定结果。
+
+失败行为：模板不存在或已停用、规则重复、计划非草稿、版本冲突不会修改状态。
 
 ### W2 节点领取租约
 
@@ -223,6 +286,7 @@ ready --lease--> leased --report--> ready
 | allocation | `internal/allocation` | 节点筛选、幂等分配组和租约生命周期 |
 | probe | `internal/probe` | 探针校验、幂等写入和租约完成 |
 | assessment | `internal/assessment` | 探针聚合和一致性判定 |
+| threshold | `internal/threshold` | 阈值模板、不可变版本、停用和计划应用 |
 | domain | `internal/domain` | 聚合、值校验、状态迁移和纯计算 |
 | store | `internal/store` | 锁内副本事务和原子 JSON 持久化 |
 | platform | `internal/platform` | 时钟、标识、游标和文件锁 |
@@ -253,8 +317,14 @@ ready --lease--> leased --report--> ready
 - `GET /v1/plans`
 - `GET /v1/plans/{id}`
 - `PATCH /v1/plans/{id}/revisions`
+- `PATCH /v1/plans/{id}/threshold`
 - `PATCH /v1/plans/{id}/activate`
 - `PATCH /v1/plans/{id}/complete`
+- `PUT /v1/threshold-templates`
+- `GET /v1/threshold-templates`
+- `GET /v1/threshold-templates/{id}`
+- `PATCH /v1/threshold-templates/{id}/versions`
+- `PATCH /v1/threshold-templates/{id}/disable`
 - `PATCH /v1/plans/{id}/leases`
 - `PATCH /v1/leases/{id}/release`
 - `PATCH /v1/leases/{id}/probes`

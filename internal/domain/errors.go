@@ -14,6 +14,8 @@ const (
 	CodeVersionConflict     ErrorCode = "version_conflict"
 	CodeIdempotencyConflict ErrorCode = "idempotency_conflict"
 	CodeDuplicateRevision   ErrorCode = "duplicate_revision"
+	CodeDuplicateTemplate   ErrorCode = "duplicate_template"
+	CodeTemplateDisabled    ErrorCode = "template_disabled"
 	CodeNodeUnavailable     ErrorCode = "node_unavailable"
 	CodeLeaseExpired        ErrorCode = "lease_expired"
 	CodeLeaseNotClaimed     ErrorCode = "lease_not_claimed"

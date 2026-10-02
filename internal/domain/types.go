@@ -59,12 +59,15 @@ type ZoneRevision struct {
 }
 
 type RolloutPlan struct {
-	ID                  string     `json:"id"`
-	Zone                string     `json:"zone"`
-	State               PlanState  `json:"state"`
-	MinimumSuccessRatio float64    `json:"minimum_success_ratio"`
-	MaximumLatencyMS    int        `json:"maximum_latency_ms"`
-	ExpectedNodes       int        `json:"expected_nodes"`
+	ID                  string    `json:"id"`
+	Zone                string    `json:"zone"`
+	State               PlanState `json:"state"`
+	MinimumSuccessRatio float64   `json:"minimum_success_ratio"`
+	MaximumLatencyMS    int       `json:"maximum_latency_ms"`
+	ExpectedNodes       int       `json:"expected_nodes"`
+	// 计划应用模板版本后锁定该版本；空值表示阈值来自创建请求本身。
+	ThresholdTemplateID string     `json:"threshold_template_id,omitempty"`
+	ThresholdVersion    int        `json:"threshold_version,omitempty"`
 	Version             uint64     `json:"version"`
 	LatestRevisionID    string     `json:"latest_revision_id,omitempty"`
 	LatestAssessmentID  string     `json:"latest_assessment_id,omitempty"`
@@ -143,18 +146,22 @@ type AuditEvent struct {
 }
 
 type State struct {
-	SchemaVersion         int                          `json:"schema_version"`
-	Revision              uint64                       `json:"revision"`
-	Plans                 map[string]RolloutPlan       `json:"plans"`
-	Revisions             map[string]ZoneRevision      `json:"revisions"`
-	Nodes                 map[string]ResolverNode      `json:"nodes"`
-	Leases                map[string]NodeLease         `json:"leases"`
-	LeaseGroups           map[string]LeaseGroup        `json:"lease_groups"`
-	Probes                map[string]Probe             `json:"probes"`
-	Assessments           map[string]RolloutAssessment `json:"assessments"`
-	LeaseRequestKeys      map[string]string            `json:"lease_request_keys"`
-	AssessmentRequestKeys map[string]string            `json:"assessment_request_keys"`
-	AuditEvents           []AuditEvent                 `json:"audit_events"`
+	SchemaVersion          int                                 `json:"schema_version"`
+	Revision               uint64                              `json:"revision"`
+	Plans                  map[string]RolloutPlan              `json:"plans"`
+	Revisions              map[string]ZoneRevision             `json:"revisions"`
+	Nodes                  map[string]ResolverNode             `json:"nodes"`
+	Leases                 map[string]NodeLease                `json:"leases"`
+	LeaseGroups            map[string]LeaseGroup               `json:"lease_groups"`
+	Probes                 map[string]Probe                    `json:"probes"`
+	Assessments            map[string]RolloutAssessment        `json:"assessments"`
+	ThresholdTemplates     map[string]ThresholdTemplate        `json:"threshold_templates"`
+	ThresholdVersions      map[string]ThresholdTemplateVersion `json:"threshold_template_versions"`
+	ThresholdVersionIndex  map[string]string                   `json:"threshold_template_version_index"`
+	ThresholdTemplateNames map[string]string                   `json:"threshold_template_names"`
+	LeaseRequestKeys       map[string]string                   `json:"lease_request_keys"`
+	AssessmentRequestKeys  map[string]string                   `json:"assessment_request_keys"`
+	AuditEvents            []AuditEvent                        `json:"audit_events"`
 }
 
 type PageMeta struct {

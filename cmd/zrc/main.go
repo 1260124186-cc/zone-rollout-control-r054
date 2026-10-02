@@ -20,6 +20,7 @@ import (
 	"solo-0014-zone-rollout-control/internal/platform"
 	"solo-0014-zone-rollout-control/internal/probe"
 	"solo-0014-zone-rollout-control/internal/store"
+	"solo-0014-zone-rollout-control/internal/threshold"
 )
 
 func main() {
@@ -61,7 +62,8 @@ func run() error {
 	allocations := allocation.New(stateStore, clock, ids)
 	probes := probe.New(stateStore, clock, ids, allocations)
 	assessments := assessment.New(stateStore, clock, ids)
-	api := httpapi.New(plans, nodes, allocations, probes, assessments, ids, logger)
+	thresholds := threshold.New(stateStore, clock, ids)
+	api := httpapi.New(plans, nodes, allocations, probes, assessments, thresholds, ids, logger)
 
 	server := &http.Server{
 		Addr:              address,

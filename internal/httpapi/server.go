@@ -10,6 +10,7 @@ import (
 	"solo-0014-zone-rollout-control/internal/plan"
 	"solo-0014-zone-rollout-control/internal/platform"
 	"solo-0014-zone-rollout-control/internal/probe"
+	"solo-0014-zone-rollout-control/internal/threshold"
 )
 
 type Server struct {
@@ -18,6 +19,7 @@ type Server struct {
 	allocations *allocation.Service
 	probes      *probe.Service
 	assessments *assessment.Service
+	thresholds  *threshold.Service
 	ids         platform.IDGenerator
 	logger      *slog.Logger
 }
@@ -28,6 +30,7 @@ func New(
 	allocations *allocation.Service,
 	probes *probe.Service,
 	assessments *assessment.Service,
+	thresholds *threshold.Service,
 	ids platform.IDGenerator,
 	logger *slog.Logger,
 ) *Server {
@@ -37,6 +40,7 @@ func New(
 		allocations: allocations,
 		probes:      probes,
 		assessments: assessments,
+		thresholds:  thresholds,
 		ids:         ids,
 		logger:      logger,
 	}

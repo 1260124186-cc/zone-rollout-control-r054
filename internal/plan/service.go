@@ -28,20 +28,86 @@ func (s *Service) Create(ctx context.Context, input domain.PlanCreateInput) (dom
 	input = domain.NormalizePlanInput(input)
 	now := s.clock.Now().UTC()
 	plan := domain.RolloutPlan{
-		ID:                  s.ids.New("pln"),
-		Zone:                input.Zone,
-		State:               domain.PlanDraft,
-		MinimumSuccessRatio: input.MinimumSuccessRatio,
-		MaximumLatencyMS:    input.MaximumLatencyMS,
-		ExpectedNodes:       input.ExpectedNodes,
-		Version:             1,
-		CreatedAt:           now,
+		ID:            s.ids.New("pln"),
+		Zone:          input.Zone,
+		State:         domain.PlanDraft,
+		ExpectedNodes: input.ExpectedNodes,
+		Version:       1,
+		CreatedAt:     now,
 	}
 	err := s.store.Write(ctx, func(state *domain.State) error {
+		if input.ThresholdTemplateID != "" {
+			// 引用模板时在同一事务内解析并快照阈值，之后模板变化不影响计划。
+			resolved, err := domain.ResolveActiveTemplateVersion(state, input.ThresholdTemplateID, input.ThresholdVersion)
+			if err != nil {
+				return err
+			}
+			plan.MinimumSuccessRatio = resolved.MinimumSuccessRatio
+			plan.MaximumLatencyMS = resolved.MaximumLatencyMS
+			plan.ThresholdTemplateID = resolved.TemplateID
+			plan.ThresholdVersion = resolved.Version
+		} else {
+			plan.MinimumSuccessRatio = input.MinimumSuccessRatio
+			plan.MaximumLatencyMS = input.MaximumLatencyMS
+		}
 		state.Plans[plan.ID] = plan
-		store.AddAudit(state, s.ids, "plan", plan.ID, "created", now, map[string]any{
-			"zone": plan.Zone,
+		attributes := map[string]any{"zone": plan.Zone}
+		if plan.ThresholdTemplateID != "" {
+			attributes["threshold_template_id"] = plan.ThresholdTemplateID
+			attributes["threshold_version"] = plan.ThresholdVersion
+		}
+		store.AddAudit(state, s.ids, "plan", plan.ID, "created", now, attributes)
+		return nil
+	})
+	return plan, err
+}
+
+// ApplyThreshold 把模板版本的阈值快照应用到草稿计划并锁定该版本。
+// 对同一版本重复应用是幂等的：直接返回计划，不提升版本。
+func (s *Service) ApplyThreshold(
+	ctx context.Context,
+	planID string,
+	input domain.ApplyThresholdInput,
+) (domain.RolloutPlan, error) {
+	if err := domain.ValidateApplyThresholdInput(input); err != nil {
+		return domain.RolloutPlan{}, err
+	}
+	var plan domain.RolloutPlan
+	err := s.store.Write(ctx, func(state *domain.State) error {
+		current, ok := state.Plans[planID]
+		if !ok {
+			return domain.NotFound("plan", planID)
+		}
+		if current.Version != input.ExpectedPlanVersion {
+			return versionConflict(planID, input.ExpectedPlanVersion, current.Version)
+		}
+		if current.State != domain.PlanDraft {
+			return domain.InvalidState("threshold template can be applied only while plan is draft", map[string]any{
+				"plan_id": planID,
+				"state":   current.State,
+			})
+		}
+		resolved, err := domain.ResolveActiveTemplateVersion(state, input.TemplateID, input.Version)
+		if err != nil {
+			return err
+		}
+		now := s.clock.Now().UTC()
+		// 已锁定同一模板版本：幂等返回，保持计划版本不变。
+		if current.ThresholdTemplateID == resolved.TemplateID && current.ThresholdVersion == resolved.Version {
+			plan = current
+			return nil
+		}
+		current.MinimumSuccessRatio = resolved.MinimumSuccessRatio
+		current.MaximumLatencyMS = resolved.MaximumLatencyMS
+		current.ThresholdTemplateID = resolved.TemplateID
+		current.ThresholdVersion = resolved.Version
+		current.Version++
+		state.Plans[planID] = current
+		store.AddAudit(state, s.ids, "plan", planID, "threshold_template_applied", now, map[string]any{
+			"threshold_template_id": resolved.TemplateID,
+			"threshold_version":     resolved.Version,
 		})
+		plan = current
 		return nil
 	})
 	return plan, err

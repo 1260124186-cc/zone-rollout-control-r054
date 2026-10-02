@@ -33,6 +33,18 @@ func normalize(state domain.State) domain.State {
 	if state.Assessments == nil {
 		state.Assessments = make(map[string]domain.RolloutAssessment)
 	}
+	if state.ThresholdTemplates == nil {
+		state.ThresholdTemplates = make(map[string]domain.ThresholdTemplate)
+	}
+	if state.ThresholdVersions == nil {
+		state.ThresholdVersions = make(map[string]domain.ThresholdTemplateVersion)
+	}
+	if state.ThresholdVersionIndex == nil {
+		state.ThresholdVersionIndex = make(map[string]string)
+	}
+	if state.ThresholdTemplateNames == nil {
+		state.ThresholdTemplateNames = make(map[string]string)
+	}
 	if state.LeaseRequestKeys == nil {
 		state.LeaseRequestKeys = make(map[string]string)
 	}
