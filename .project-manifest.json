@@ -39,6 +39,11 @@
       "responsibility": "probe aggregation, deterministic verdicts, and latest result reads"
     },
     {
+      "id": "threshold",
+      "path": "internal/threshold",
+      "responsibility": "versioned consistency threshold templates, scoping, disablement, and locked application to plans"
+    },
+    {
       "id": "domain",
       "path": "internal/domain",
       "responsibility": "entities, DNS value validation, transitions, and stable errors"
@@ -151,6 +156,27 @@
         "httpapi",
         "assessment",
         "probe",
+        "domain",
+        "storage"
+      ]
+    },
+    {
+      "id": "threshold-template-versioning",
+      "name": "Versioned threshold templates",
+      "entry": "PUT /v1/threshold-templates -> versions -> disable; PATCH /v1/plans/{id}/threshold-template",
+      "steps": [
+        "validate minimum success ratio, maximum latency, and global or zone-list scope",
+        "append an immutable, monotonically numbered template version",
+        "snapshot a selected version onto a draft plan and lock the version reference",
+        "reject disabled templates, scope mismatches, stale plan versions, and active-plan updates"
+      ],
+      "success": "plans reuse shared thresholds while recording the exact version applied, and later template changes never alter locked plans",
+      "failure": "invalid input, unknown templates or versions, disabled templates, out-of-scope zones, and concurrent stale applications return stable errors without partial writes",
+      "verification": "workflowprobe threshold-template-versioning covers validation, versioning, lock stability, disablement, scope rejection, concurrent conflict, and a locked-threshold assessment after disable",
+      "module_ids": [
+        "httpapi",
+        "threshold",
+        "plan",
         "domain",
         "storage"
       ]

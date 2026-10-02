@@ -34,6 +34,27 @@ const (
 	VerdictReviewRequired Verdict = "review_required"
 )
 
+type ThresholdSource string
+
+const (
+	ThresholdFromRequest  ThresholdSource = "request"
+	ThresholdFromTemplate ThresholdSource = "template"
+)
+
+type ThresholdTemplateState string
+
+const (
+	ThresholdTemplateActive   ThresholdTemplateState = "active"
+	ThresholdTemplateDisabled ThresholdTemplateState = "disabled"
+)
+
+type TemplateScopeType string
+
+const (
+	TemplateScopeGlobal TemplateScopeType = "global"
+	TemplateScopeZones  TemplateScopeType = "zones"
+)
+
 type EntryType string
 
 const (
@@ -58,19 +79,27 @@ type ZoneRevision struct {
 	CreatedAt  time.Time   `json:"created_at"`
 }
 
+type AppliedThresholdTemplate struct {
+	TemplateID string    `json:"template_id"`
+	Version    int       `json:"version"`
+	AppliedAt  time.Time `json:"applied_at"`
+}
+
 type RolloutPlan struct {
-	ID                  string     `json:"id"`
-	Zone                string     `json:"zone"`
-	State               PlanState  `json:"state"`
-	MinimumSuccessRatio float64    `json:"minimum_success_ratio"`
-	MaximumLatencyMS    int        `json:"maximum_latency_ms"`
-	ExpectedNodes       int        `json:"expected_nodes"`
-	Version             uint64     `json:"version"`
-	LatestRevisionID    string     `json:"latest_revision_id,omitempty"`
-	LatestAssessmentID  string     `json:"latest_assessment_id,omitempty"`
-	CreatedAt           time.Time  `json:"created_at"`
-	ActivatedAt         *time.Time `json:"activated_at,omitempty"`
-	CompletedAt         *time.Time `json:"completed_at,omitempty"`
+	ID                  string                    `json:"id"`
+	Zone                string                    `json:"zone"`
+	State               PlanState                 `json:"state"`
+	MinimumSuccessRatio float64                   `json:"minimum_success_ratio"`
+	MaximumLatencyMS    int                       `json:"maximum_latency_ms"`
+	ExpectedNodes       int                       `json:"expected_nodes"`
+	ThresholdSource     ThresholdSource           `json:"threshold_source"`
+	ThresholdTemplate   *AppliedThresholdTemplate `json:"threshold_template,omitempty"`
+	Version             uint64                    `json:"version"`
+	LatestRevisionID    string                    `json:"latest_revision_id,omitempty"`
+	LatestAssessmentID  string                    `json:"latest_assessment_id,omitempty"`
+	CreatedAt           time.Time                 `json:"created_at"`
+	ActivatedAt         *time.Time                `json:"activated_at,omitempty"`
+	CompletedAt         *time.Time                `json:"completed_at,omitempty"`
 }
 
 type ResolverNode struct {
@@ -142,6 +171,31 @@ type AuditEvent struct {
 	Attributes map[string]any `json:"attributes,omitempty"`
 }
 
+type TemplateScope struct {
+	Type  TemplateScopeType `json:"type"`
+	Zones []string          `json:"zones,omitempty"`
+}
+
+type ThresholdTemplateVersion struct {
+	Version             int           `json:"version"`
+	MinimumSuccessRatio float64       `json:"minimum_success_ratio"`
+	MaximumLatencyMS    int           `json:"maximum_latency_ms"`
+	Scope               TemplateScope `json:"scope"`
+	CreatedAt           time.Time     `json:"created_at"`
+}
+
+type ThresholdTemplate struct {
+	ID            string                     `json:"id"`
+	Name          string                     `json:"name"`
+	Description   string                     `json:"description,omitempty"`
+	State         ThresholdTemplateState     `json:"state"`
+	LatestVersion int                        `json:"latest_version"`
+	Versions      []ThresholdTemplateVersion `json:"versions"`
+	CreatedAt     time.Time                  `json:"created_at"`
+	UpdatedAt     time.Time                  `json:"updated_at"`
+	DisabledAt    *time.Time                 `json:"disabled_at,omitempty"`
+}
+
 type State struct {
 	SchemaVersion         int                          `json:"schema_version"`
 	Revision              uint64                       `json:"revision"`
@@ -154,6 +208,7 @@ type State struct {
 	Assessments           map[string]RolloutAssessment `json:"assessments"`
 	LeaseRequestKeys      map[string]string            `json:"lease_request_keys"`
 	AssessmentRequestKeys map[string]string            `json:"assessment_request_keys"`
+	ThresholdTemplates    map[string]ThresholdTemplate `json:"threshold_templates"`
 	AuditEvents           []AuditEvent                 `json:"audit_events"`
 }
 
@@ -170,4 +225,9 @@ type PlanPage struct {
 type NodePage struct {
 	Items []ResolverNode `json:"items"`
 	Meta  PageMeta       `json:"meta"`
+}
+
+type ThresholdTemplatePage struct {
+	Items []ThresholdTemplate `json:"items"`
+	Meta  PageMeta            `json:"meta"`
 }

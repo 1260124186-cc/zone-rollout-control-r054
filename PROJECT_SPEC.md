@@ -24,10 +24,33 @@ Zone Rollout Control 是面向 DNS 运维人员的 Go HTTP 控制面。它把区
 - `minimum_success_ratio`：成功节点占比下限，范围为 0 到 1。
 - `maximum_latency_ms`：允许的最大探针延迟。
 - `expected_nodes`：计划预期参与的节点数，范围为 1 到 500。
+- `threshold_source`：`request`（使用创建请求内阈值）或 `template`（来自阈值模板）。
+- `threshold_template`：应用模板后锁定的版本引用，包含 `template_id`、`version` 和 `applied_at`；未使用模板时缺省。
 - `version`：每次计划聚合变化后递增。
 - `latest_revision_id`：最近一次添加的区域版本。
 - `latest_assessment_id`：最近一次完成的一致性判定。
 - `created_at`、`activated_at`、`completed_at`：RFC3339 时间。
+
+计划内的阈值字段是判定时唯一读取的来源：模板应用时把数值快照到计划上，模板后续新增版本或停用不会静默改变已有计划。
+
+### ThresholdTemplate
+
+可复用、版本化的一致性阈值模板，描述同一业务等级共享的最低成功率、最大延迟和适用范围。
+
+- `id`：服务生成的稳定标识。
+- `name`：唯一名称，停用后仍然保留占用。
+- `description`：可选说明。
+- `state`：`active` 或 `disabled`。
+- `latest_version`：当前最新版本号，从 1 开始单调递增。
+- `versions`：不可变版本数组，每项包含：
+  - `version`：版本号。
+  - `minimum_success_ratio`：最低成功比例，范围为 0 到 1。
+  - `maximum_latency_ms`：最大探针延迟，范围为 1 到 600000。
+  - `scope`：适用范围，`type` 为 `global` 或 `zones`；`zones` 必须携带规范化去重后的区域名列表（最多 500 个）。
+  - `created_at`。
+- `created_at`、`updated_at`、`disabled_at`。
+
+新版本只能追加，已有版本内容不可修改；停用后不能再追加版本，也不能再应用到计划，但已锁定该模板版本的计划不受影响。
 
 ### ZoneRevision
 
@@ -142,6 +165,22 @@ ready --lease--> leased --report--> ready
 - `success_ratio_below_minimum`
 - `latency_limit_exceeded`
 
+判定始终读取计划上的阈值快照；模板版本只决定应用那一刻写入的数值。
+
+### 阈值模板规则
+
+- 创建模板即生成版本 1，请求内可省略 `scope.type`，缺省为 `global`。
+- 新版本号严格递增；版本一经写入不可修改，任何“修改规则”都通过追加新版本完成。
+- 应用模板只允许在计划 `draft` 状态进行，请求必须匹配当前计划版本（`expected_version`）。
+- 应用时可以指定 `template_version`；省略或传 0 表示模板当前最新版本。
+- 应用成功后计划写入阈值快照、`threshold_source=template` 和锁定的 `template_id`/`version`/`applied_at`，并递增计划版本。
+- 计划已激活（`active`/`completed`）时应用或更新模板一律返回 `invalid_state`，不会改写锁定阈值。
+- 停用的模板不能再被应用，也不能追加版本；重复停用返回 `template_disabled`。
+- 版本适用范围不覆盖计划区域时返回 `template_scope_mismatch`；`global` 适用于所有区域。
+- 对计划已锁定的同一模板同一显式版本的重放是幂等空操作，不移动计划版本，即使模板随后停用也保持成功。
+- 并发应用以计划乐观版本串行化：匹配版本的请求恰好成功一次，其余返回 `version_conflict`，无部分写入。
+- 未应用模板的计划保持 `threshold_source=request`，继续使用创建请求内阈值。
+
 ## 5. 工作流
 
 ### W1 计划生命周期和区域版本
@@ -212,6 +251,28 @@ ready --lease--> leased --report--> ready
 
 失败行为：缺少区域版本、没有探针、请求键冲突或保存失败不会更新计划摘要。
 
+### W5 版本化阈值模板
+
+入口：
+
+- `PUT /v1/threshold-templates`
+- `GET /v1/threshold-templates`
+- `GET /v1/threshold-templates/{id}`
+- `PATCH /v1/threshold-templates/{id}/versions`
+- `PATCH /v1/threshold-templates/{id}/disable`
+- `PATCH /v1/plans/{id}/threshold-template`
+
+步骤：
+
+1. HTTP 层严格解码名称、阈值和范围。
+2. 领域层规范化区域名、去重排序，并校验阈值与范围组合。
+3. 模板服务在锁内追加不可变版本或停用模板，原子替换快照。
+4. 应用在同一事务内校验计划版本、计划状态、模板状态和版本范围，然后把阈值和版本引用快照到计划。
+
+成功行为：同业务等级复用模板；计划记录当时应用的确切版本，后续新增版本与停用不改变已有计划；相同应用可安全重放。
+
+失败行为：非法阈值或范围、重名、版本不存在、模板停用、范围不匹配、计划已激活或计划版本冲突都不修改任何状态。
+
 ## 6. 模块边界
 
 | 模块 | 路径 | 责任 |
@@ -223,6 +284,7 @@ ready --lease--> leased --report--> ready
 | allocation | `internal/allocation` | 节点筛选、幂等分配组和租约生命周期 |
 | probe | `internal/probe` | 探针校验、幂等写入和租约完成 |
 | assessment | `internal/assessment` | 探针聚合和一致性判定 |
+| threshold | `internal/threshold` | 版本化阈值模板、适用范围、停用和计划应用锁定 |
 | domain | `internal/domain` | 聚合、值校验、状态迁移和纯计算 |
 | store | `internal/store` | 锁内副本事务和原子 JSON 持久化 |
 | platform | `internal/platform` | 时钟、标识、游标和文件锁 |
@@ -260,6 +322,12 @@ ready --lease--> leased --report--> ready
 - `PATCH /v1/leases/{id}/probes`
 - `PATCH /v1/plans/{id}/assessments`
 - `GET /v1/plans/{id}/assessments/latest`
+- `PUT /v1/threshold-templates`
+- `GET /v1/threshold-templates`
+- `GET /v1/threshold-templates/{id}`
+- `PATCH /v1/threshold-templates/{id}/versions`
+- `PATCH /v1/threshold-templates/{id}/disable`
+- `PATCH /v1/plans/{id}/threshold-template`
 
 ## 8. 工程机制
 
@@ -282,5 +350,6 @@ ready --lease--> leased --report--> ready
 2. 节点分配、租约唯一性、幂等重放和无可用节点冲突。
 3. 探针首写、同键重放、同键异载荷冲突和释放冲突。
 4. 一致性通过、审核触发、最新结果查询和幂等重放。
+5. 模板阈值校验、版本追加与锁定稳定性、停用、范围拒绝、并发冲突和已激活计划更新冲突。
 
 每条探针使用独立临时目录，不访问外部网络，结束后关闭服务。

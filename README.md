@@ -45,6 +45,7 @@ internal/fleet              解析节点档案服务
 internal/allocation         节点选择和租约生命周期
 internal/probe              探针登记、幂等重放和租约完成
 internal/assessment         一致性聚合和最新结果查询
+internal/threshold          版本化阈值模板、适用范围、停用和应用锁定
 internal/httpapi            HTTP 路由、中间件和响应映射
 internal/workflowprobe      真实 HTTP 路径验证
 ```
@@ -135,6 +136,52 @@ curl -sS -X PATCH http://127.0.0.1:8090/v1/plans/<plan_id>/assessments \
   -d '{"request_key": "assess-request-0001"}'
 ```
 
+创建版本化阈值模板（省略 `scope` 时默认为全局适用）：
+
+```bash
+curl -sS -X PUT http://127.0.0.1:8090/v1/threshold-templates \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "standard-tier",
+    "description": "strict thresholds for the standard tier",
+    "minimum_success_ratio": 0.99,
+    "maximum_latency_ms": 80,
+    "scope": {"type": "zones", "zones": ["edge.example", "core.example"]}
+  }'
+```
+
+追加新版本（旧版本不可变，已应用旧版本的计划不会受影响）：
+
+```bash
+curl -sS -X PATCH http://127.0.0.1:8090/v1/threshold-templates/<template_id>/versions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "minimum_success_ratio": 0.95,
+    "maximum_latency_ms": 120,
+    "scope": {"type": "global"}
+  }'
+```
+
+把模板版本应用到草稿计划（`template_version` 省略或传 0 表示最新版；应用后计划锁定该版本）：
+
+```bash
+curl -sS -X PATCH http://127.0.0.1:8090/v1/plans/<plan_id>/threshold-template \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "template_id": "<template_id>",
+    "template_version": 1,
+    "expected_version": 1
+  }'
+```
+
+停用模板：
+
+```bash
+curl -sS -X PATCH http://127.0.0.1:8090/v1/threshold-templates/<template_id>/disable
+```
+
+停用后不能再追加版本或应用到计划，但已锁定该模板版本的计划继续按当时快照判定。未应用模板的计划始终使用创建请求内的 `minimum_success_ratio` 与 `maximum_latency_ms`。
+
 ## API 概览
 
 成功响应：
@@ -178,6 +225,12 @@ curl -sS -X PATCH http://127.0.0.1:8090/v1/plans/<plan_id>/assessments \
 | `PATCH` | `/v1/leases/{id}/probes` | 登记探针并完成租约 |
 | `PATCH` | `/v1/plans/{id}/assessments` | 创建一致性判定 |
 | `GET` | `/v1/plans/{id}/assessments/latest` | 查询最近判定 |
+| `PUT` | `/v1/threshold-templates` | 创建阈值模板（含版本 1） |
+| `GET` | `/v1/threshold-templates` | 按状态分页查询阈值模板 |
+| `GET` | `/v1/threshold-templates/{id}` | 查询模板及全部版本 |
+| `PATCH` | `/v1/threshold-templates/{id}/versions` | 追加不可变新版本 |
+| `PATCH` | `/v1/threshold-templates/{id}/disable` | 停用模板 |
+| `PATCH` | `/v1/plans/{id}/threshold-template` | 把模板版本应用（锁定）到草稿计划 |
 
 ## 状态及失败行为
 
@@ -188,6 +241,9 @@ curl -sS -X PATCH http://127.0.0.1:8090/v1/plans/<plan_id>/assessments \
 - 一个节点同一时刻最多有一个 `claimed` 租约。
 - 相同请求键和相同内容可安全重放；同键异载荷返回 `idempotency_conflict`。
 - 一致性判定综合节点覆盖率、序列号、成功比例和最大延迟，返回 `consistent` 或 `review_required`。
+- 阈值模板版本不可变、版本号严格递增；模板停用后不可再追加版本或应用，已锁定版本的计划保持原阈值。
+- 模板只能在计划草稿状态应用，必须匹配计划版本；版本范围不覆盖计划区域时拒绝。
+- 同一模板同一显式版本的重复应用是幂等空操作；并发应用以乐观版本串行，恰好一次成功。
 - 所有校验和冲突在快照替换前返回，不留下部分状态。
 
 ## 后续工程任务的行为边界
@@ -204,6 +260,7 @@ curl -sS -X PATCH http://127.0.0.1:8090/v1/plans/<plan_id>/assessments \
 8. 成功率、节点覆盖、序列号一致性和延迟上限计算。
 9. 原子快照替换、文件锁、进程关闭和并发事务串行化。
 10. 严格 JSON 解码、分页游标和领域错误到 HTTP 状态的映射。
+11. 阈值模板版本追加、范围匹配、停用、版本锁定快照和并发应用冲突。
 
 这些是正常运行机制，不是预置缺陷，也不包含缺陷票据、参考答案或测试文件。
 
@@ -216,6 +273,7 @@ go run ./cmd/workflowprobe plan-revision-lifecycle
 go run ./cmd/workflowprobe node-lease-allocation
 go run ./cmd/workflowprobe probe-ingestion
 go run ./cmd/workflowprobe consistency-assessment
+go run ./cmd/workflowprobe threshold-template-versioning
 ```
 
 探针不访问外部网络，也不依赖已有状态文件。

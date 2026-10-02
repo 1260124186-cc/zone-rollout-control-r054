@@ -39,6 +39,17 @@ func normalize(state domain.State) domain.State {
 	if state.AssessmentRequestKeys == nil {
 		state.AssessmentRequestKeys = make(map[string]string)
 	}
+	if state.ThresholdTemplates == nil {
+		state.ThresholdTemplates = make(map[string]domain.ThresholdTemplate)
+	}
+	// Plans created before versioned threshold templates keep using the
+	// thresholds supplied inline in their create request.
+	for planID, plan := range state.Plans {
+		if plan.ThresholdSource == "" {
+			plan.ThresholdSource = domain.ThresholdFromRequest
+			state.Plans[planID] = plan
+		}
+	}
 	if state.AuditEvents == nil {
 		state.AuditEvents = []domain.AuditEvent{}
 	}

@@ -20,6 +20,7 @@ import (
 	"solo-0014-zone-rollout-control/internal/platform"
 	"solo-0014-zone-rollout-control/internal/probe"
 	"solo-0014-zone-rollout-control/internal/store"
+	"solo-0014-zone-rollout-control/internal/threshold"
 )
 
 type harness struct {
@@ -49,7 +50,8 @@ func newHarness() (*harness, error) {
 	allocations := allocation.New(stateStore, clock, ids)
 	probes := probe.New(stateStore, clock, ids, allocations)
 	assessments := assessment.New(stateStore, clock, ids)
-	api := httpapi.New(plans, nodes, allocations, probes, assessments, ids, logger)
+	thresholdTemplates := threshold.New(stateStore, clock, ids)
+	api := httpapi.New(plans, nodes, allocations, probes, assessments, thresholdTemplates, ids, logger)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

@@ -21,4 +21,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 
 	mux.HandleFunc("PATCH /v1/plans/{id}/assessments", s.assessPlan)
 	mux.HandleFunc("GET /v1/plans/{id}/assessments/latest", s.latestAssessment)
+
+	mux.HandleFunc("PUT /v1/threshold-templates", s.createThresholdTemplate)
+	mux.HandleFunc("GET /v1/threshold-templates", s.listThresholdTemplates)
+	mux.HandleFunc("GET /v1/threshold-templates/{id}", s.getThresholdTemplate)
+	mux.HandleFunc("PATCH /v1/threshold-templates/{id}/versions", s.addThresholdTemplateVersion)
+	mux.HandleFunc("PATCH /v1/threshold-templates/{id}/disable", s.disableThresholdTemplate)
+	mux.HandleFunc("PATCH /v1/plans/{id}/threshold-template", s.applyThresholdTemplate)
 }

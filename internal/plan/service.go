@@ -34,6 +34,7 @@ func (s *Service) Create(ctx context.Context, input domain.PlanCreateInput) (dom
 		MinimumSuccessRatio: input.MinimumSuccessRatio,
 		MaximumLatencyMS:    input.MaximumLatencyMS,
 		ExpectedNodes:       input.ExpectedNodes,
+		ThresholdSource:     domain.ThresholdFromRequest,
 		Version:             1,
 		CreatedAt:           now,
 	}
